@@ -23,35 +23,39 @@ struct CLogWave : public llvm::PassInfoMixin<CLogWave> {
   const StringRef trace_func_name = "my_trace";
   int store_cnt = 0;
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &);
-  void runOnStoreInst(StoreInst *inst, Function &f);
   void addFilePtrDeclaration(llvm::Module &M);
   void addCallToFopen(Module &M, Function *fmain);
-  //void insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func, llvm::Module &M);
+  void insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func, llvm::Module &M);
+  void addTraceToInst(Module &M, Instruction *inst);
   void addTraceWrite(Module &M);
 };
 } // namespace
 
 llvm::PassPluginLibraryInfo getMemoryTracePluginInfo() {
-  return {
-      LLVM_PLUGIN_API_VERSION, PASS_NAME, LLVM_VERSION_STRING,
-      [](PassBuilder &PB) {
-        /* for clang to automatically include this pass */
-        /* TODO: why this works? */
-        PB.registerPipelineEarlySimplificationEPCallback(
-            [&](ModulePassManager &MPM, OptimizationLevel level) {
-              MPM.addPass(CLogWave());
-            });
-      }};
+  return {LLVM_PLUGIN_API_VERSION, PASS_NAME, LLVM_VERSION_STRING,
+          [](PassBuilder &PB) {
+            PB.registerPipelineParsingCallback(
+                [](StringRef Name, ModulePassManager &MPM,
+                   ArrayRef<PassBuilder::PipelineElement>) {
+                  if (Name == PASS_NAME) {
+                    MPM.addPass(CLogWave());
+                    return true;
+                  }
+
+                  return false;
+                });
+            /* for clang to automatically include this pass */
+            /* TODO: why this works? */
+            PB.registerPipelineEarlySimplificationEPCallback(
+                [&](ModulePassManager &MPM, OptimizationLevel level) {
+                  MPM.addPass(CLogWave());
+                });
+          }};
 }
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
   return getMemoryTracePluginInfo();
-}
-
-void CLogWave::runOnStoreInst(StoreInst *inst, Function &f) {
-  outs() << f.getName() << ' ' << inst << '\n';
-  store_cnt++;
 }
 
 PreservedAnalyses CLogWave::run(Module &M, ModuleAnalysisManager &) {
@@ -69,7 +73,8 @@ PreservedAnalyses CLogWave::run(Module &M, ModuleAnalysisManager &) {
       for (auto Inst = BB.begin(); Inst != BB.end(); ++Inst) {
         if (isa<StoreInst>(Inst)) {
           StoreInst *inst = dyn_cast<StoreInst>(Inst);
-          runOnStoreInst(inst, Func);
+          outs() << "found\n";
+          addTraceToInst(M, inst);
         }
       }
     }
@@ -130,13 +135,8 @@ void CLogWave::addCallToFopen(Module &M, Function *fmain) {
   Builder.CreateStore(fopen_return, FPGlobal);
 }
 
-#if 0
-void my_trace() {
-  fprintf(gbl, "hello");
-}
-#endif
 
-#if 0
+/* Insert a call to fprintf in func */
 void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
                                    llvm::Module &M) {
   auto &ctx = M.getContext();
@@ -149,7 +149,7 @@ void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
 
   FunctionCallee Fprintf = M.getOrInsertFunction("fprintf", FprintfTy);
 
-  Constant *hello_str = ConstantDataArray::getString(ctx, "hello nigga\n");
+  Constant *hello_str = ConstantDataArray::getString(ctx, "hello world\n");
   Constant *hello_gbl_var = M.getOrInsertGlobal("msg", hello_str->getType());
   dyn_cast<GlobalVariable>(hello_gbl_var)->setInitializer(hello_str);
 
@@ -158,36 +158,31 @@ void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
       PointerType::getUnqual(Type::getInt8Ty(ctx)), FPGlobal);
 
   GlobalVariable *msg_global = M.getNamedGlobal("msg");
-  LoadInst *msg_load = Builder.CreateLoad(
-      PointerType::getUnqual(Type::getInt8Ty(ctx)), msg_global);
+  //LoadInst *msg_load = Builder.CreateLoad( PointerType::getUnqual(Type::getInt8Ty(ctx)), msg_global);
 
-  Builder.CreateCall(Fprintf, {FP, msg_load});
+  Builder.CreateCall(Fprintf, {FP, msg_global});
 }
-#endif
 
+/* Add this function into module M
+ *    void my_trace() {
+ *      fprintf(gbl, "hello");
+ *    }
+ */
 void CLogWave::addTraceWrite(Module &M) {
   auto &ctx = M.getContext();
   FunctionType *my_trace_ty = FunctionType::get(Type::getVoidTy(ctx), false);
-  FunctionCallee my_trace_callee = M.getOrInsertFunction(trace_func_name, my_trace_ty);
-  if (!my_trace_callee) {
-    log_fatal << "my_trace_callee is null\n";
-    return;
-  }
+  Function *my_trace_func = Function::Create(my_trace_ty, GlobalValue::ExternalLinkage, "my_trace", M);
+  BasicBlock *first_block = BasicBlock::Create(ctx, "first_bb", my_trace_func);
+  IRBuilder<> Builder(first_block);
+  Builder.SetInsertPoint(first_block);
+  insertCallToFprintf(Builder, *my_trace_func, M);
+  Builder.CreateRetVoid();
+}
 
-  Function *my_trace_func = dyn_cast<Function>(my_trace_callee.getCallee());
-  if (!my_trace_func) {
-    log_fatal << "my_trace_func is null\n";
-    return;
-  }
-  my_trace_func->setLinkage(GlobalValue::ExternalLinkage);
-
-
-  BasicBlock &BB = my_trace_func->getEntryBlock();
-  // CONTINUE HERE
-  // BasicBlock::Create is segfaulting here
-#if 0
-  BasicBlock *BB = BasicBlock::Create(ctx, "my_random_entry", my_trace_func);
-  IRBuilder<> Builder(BB);
-  //insertCallToFprintf(Builder, *my_trace_func, M);
-#endif
+void CLogWave::addTraceToInst(Module &M, Instruction *inst) {
+  auto &ctx = M.getContext();
+  FunctionType *my_trace_ty = FunctionType::get(Type::getVoidTy(ctx), false);
+  FunctionCallee calle = M.getOrInsertFunction("my_trace", my_trace_ty);
+  IRBuilder<> Builder(inst->getNextNode());
+  Builder.CreateCall(calle); 
 }
