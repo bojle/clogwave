@@ -17,6 +17,24 @@
 using namespace llvm;
 
 namespace {
+
+class FuncContainer {
+  llvm::StringRef name; 
+};
+
+class VarContainer {
+
+};
+
+class Node {
+  std::vector<VarContainer*> vars;
+  std::vector<FuncContainer*> funcs;
+};
+
+class ScopeHierarchy {
+
+};
+
 struct CLogWave : public llvm::PassInfoMixin<CLogWave> {
   const StringRef file_ptr_var_name = "MemTraceFilePtr";
   const StringRef vcd_dump_filename = "clogwave_dump.vcd";
@@ -29,6 +47,7 @@ struct CLogWave : public llvm::PassInfoMixin<CLogWave> {
   void addTraceToInst(Module &M, Instruction *inst);
   void addTraceWrite(Module &M);
 };
+
 } // namespace
 
 llvm::PassPluginLibraryInfo getMemoryTracePluginInfo() {
@@ -69,12 +88,22 @@ PreservedAnalyses CLogWave::run(Module &M, ModuleAnalysisManager &) {
   addTraceWrite(M);
 
   for (auto &Func : M) {
+    outs() << "In function: " << Func.getName() << '\n';
     for (auto &BB : Func) {
       for (auto Inst = BB.begin(); Inst != BB.end(); ++Inst) {
         if (isa<StoreInst>(Inst)) {
           StoreInst *inst = dyn_cast<StoreInst>(Inst);
-          outs() << "found\n";
+          outs() << '\t' << inst << '\n';
           addTraceToInst(M, inst);
+        }
+        else if (isa<CallInst>(Inst)) {
+          CallInst *inst = dyn_cast<CallInst>(Inst);
+          Function *fn = inst->getCalledFunction();
+          if (fn) {
+            if (fn->getName() != "my_trace" && !fn->isDeclaration()) {
+              outs() << '\t' << "My child: " << fn->getName() << '\n';
+            }
+          }
         }
       }
     }
