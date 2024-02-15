@@ -5,24 +5,13 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include <string>
-#include <sstream>
 
 #define PASS_NAME "CLogWave"
 #define log_fatal errs() << PASS_NAME << ": FATAL: "
 
-#if 0
-1. module pass
-2. print all important store instructions
-3. design DS for storing variables
-4. insert print func to the module
-#endif
-
 using namespace llvm;
 
 namespace {
-
-// outs() << func.getName() << ' ' <<
-//"name" << ' ' << "allocainst: " << *dbg_inst << '\n';
 
 StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
   Metadata *raw = dbg_inst->getRawVariable();
@@ -61,9 +50,12 @@ public:
           const DbgDeclareInst *dbg_inst = dyn_cast<DbgDeclareInst>(Inst);
           StringRef ret_name = getNameFromDbgInst(dbg_inst);
           VarContainer vv;
-          vv.name = std::string(func.getName().str() + std::string(".") + ret_name.str());
-          vv.type = std::string("reg"); // TODO: write a func to get this from DbgInfo
-          vv.width = std::string("64"); // TODO: write a func to get this from DbgInfo
+          vv.name = std::string(func.getName().str() + std::string(".") +
+                                ret_name.str());
+          vv.type =
+              std::string("reg"); // TODO: write a func to get this from DbgInfo
+          vv.width =
+              std::string("64"); // TODO: write a func to get this from DbgInfo
           vars.push_back(vv);
         }
       }
@@ -72,9 +64,7 @@ public:
   }
   StringRef getName() { return name; }
 
-  std::vector<VarContainer> getVars() const {
-    return vars;
-  }
+  std::vector<VarContainer> getVars() const { return vars; }
 
   void print() const {
     outs() << "Function: " << name << '\n';
@@ -97,7 +87,8 @@ public:
     for (auto &i : scope_hierarchy) {
       outs() << "$scope module " << i.first << " $end\n";
       for (auto &var : i.second->getVars()) {
-        outs() << "$var " << var.type << ' ' << var.width << ' ' << var.name << ' ' << var.name << " $end\n";
+        outs() << "$var " << var.type << ' ' << var.width << ' ' << var.name
+               << ' ' << var.name << " $end\n";
       }
       outs() << "$upscope $end\n";
     }
