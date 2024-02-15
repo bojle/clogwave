@@ -4,6 +4,9 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
+#include <string>
+#include <sstream>
+
 #define PASS_NAME "CLogWave"
 #define log_fatal errs() << PASS_NAME << ": FATAL: "
 
@@ -18,21 +21,93 @@ using namespace llvm;
 
 namespace {
 
+// outs() << func.getName() << ' ' <<
+//"name" << ' ' << "allocainst: " << *dbg_inst << '\n';
+
+StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
+  Metadata *raw = dbg_inst->getRawVariable();
+  if (isa<DILocalVariable>(raw)) {
+    DILocalVariable *local_var = dyn_cast<DILocalVariable>(raw);
+    return local_var->getName();
+  }
+  errs() << "Could Not Find Name in DbgInfo, perhaps compile the program with "
+            "-g?\n";
+  /* TODO: return better */
+  return "";
+}
+
 class FuncContainer {
-  llvm::StringRef name; 
+  /* All variables used by the Function */
+  std::vector<std::string> vars;
+  /* Name of the function */
+  /* Consider StringRefs or Twines */
+  StringRef name;
+
+public:
+  FuncContainer(const llvm::Function &func) {
+    name = func.getName();
+    /* TODO: get all local variables, and push them to var */
+    for (auto &BB : func) {
+      for (auto Inst = BB.begin(); Inst != BB.end(); ++Inst) {
+        if (isa<DbgDeclareInst>(Inst)) {
+          /* This is a CallInst, isa returns true because
+           * DbgDeclareInst inherits from CallInst
+           * */
+          const DbgDeclareInst *dbg_inst = dyn_cast<DbgDeclareInst>(Inst);
+          StringRef ret_name = getNameFromDbgInst(dbg_inst);
+          std::string t(func.getName().str() + std::string(".") + ret_name.str());
+          vars.push_back(t);
+        }
+      }
+    }
+    /* TODO: get all global variables and push them to var */
+  }
+  StringRef getName() { return name; }
+
+  std::vector<std::string> getVars() const {
+    return vars;
+  }
+
+  void print() const {
+    outs() << "Function: " << name << '\n';
+    for (auto &i : vars) {
+      outs() << '\t' << i << '\n';
+    }
+  }
 };
 
-class VarContainer {
+/* TODO: Iterate over this to generate $scope ... $end statements */
+class ScopeHierarchy {
+  std::map<StringRef, FuncContainer *> scope_hierarchy;
 
+public:
+  void insert(const Function &func) {
+    FuncContainer *fc = new FuncContainer(func);
+    scope_hierarchy.insert({func.getName(), fc});
+  }
+  void generate_scope() const {
+    for (auto &i : scope_hierarchy) {
+      outs() << "$scope module " << i.first << " $end\n";
+      for (auto var : i.second->getVars()) {
+        outs() << "$var reg 64 "  << var << ' ' << var << " $end\n";
+      }
+      outs() << "$upscope $end\n";
+    }
+  }
+  void print() {
+    for (auto i : scope_hierarchy) {
+      i.second->print();
+    }
+  }
+  ~ScopeHierarchy() {
+    for (auto i : scope_hierarchy) {
+      delete i.second;
+    }
+  }
 };
 
 class Node {
-  std::vector<VarContainer*> vars;
-  std::vector<FuncContainer*> funcs;
-};
-
-class ScopeHierarchy {
-
+  std::vector<FuncContainer> funcs;
 };
 
 struct CLogWave : public llvm::PassInfoMixin<CLogWave> {
@@ -43,7 +118,8 @@ struct CLogWave : public llvm::PassInfoMixin<CLogWave> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &);
   void addFilePtrDeclaration(llvm::Module &M);
   void addCallToFopen(Module &M, Function *fmain);
-  void insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func, llvm::Module &M);
+  void insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
+                           llvm::Module &M);
   void addTraceToInst(Module &M, Instruction *inst);
   void addTraceWrite(Module &M);
 };
@@ -87,28 +163,14 @@ PreservedAnalyses CLogWave::run(Module &M, ModuleAnalysisManager &) {
   addCallToFopen(M, main_func);
   addTraceWrite(M);
 
+  ScopeHierarchy scope_hierarchy;
+
   for (auto &Func : M) {
-    outs() << "In function: " << Func.getName() << '\n';
-    for (auto &BB : Func) {
-      for (auto Inst = BB.begin(); Inst != BB.end(); ++Inst) {
-        if (isa<StoreInst>(Inst)) {
-          StoreInst *inst = dyn_cast<StoreInst>(Inst);
-          outs() << '\t' << inst << '\n';
-          addTraceToInst(M, inst);
-        }
-        else if (isa<CallInst>(Inst)) {
-          CallInst *inst = dyn_cast<CallInst>(Inst);
-          Function *fn = inst->getCalledFunction();
-          if (fn) {
-            if (fn->getName() != "my_trace" && !fn->isDeclaration()) {
-              outs() << '\t' << "My child: " << fn->getName() << '\n';
-            }
-          }
-        }
-      }
+    if (!Func.isDeclaration() && Func.getName() != trace_func_name) {
+      scope_hierarchy.insert(Func);
     }
   }
-  outs() << "Total stores: " << store_cnt << '\n';
+  scope_hierarchy.generate_scope();
   return PreservedAnalyses::none();
 }
 
@@ -125,7 +187,7 @@ void CLogWave::addFilePtrDeclaration(Module &M) {
 }
 
 /* Create a global string literal with name argName and initialize it
- * with varName 
+ * with varName
  */
 Constant *createCharPtrArg(llvm::Module &M, StringRef varName,
                            StringRef argName) {
@@ -135,7 +197,8 @@ Constant *createCharPtrArg(llvm::Module &M, StringRef varName,
   return var;
 }
 
-/* Add a call to fopen to initialize the FILE * added by addFilePtrDeclaration */
+/* Add a call to fopen to initialize the FILE * added by addFilePtrDeclaration
+ */
 void CLogWave::addCallToFopen(Module &M, Function *fmain) {
   auto &ctx = M.getContext();
   Type *fopen_return_type = get_pointer(M);
@@ -164,7 +227,6 @@ void CLogWave::addCallToFopen(Module &M, Function *fmain) {
   Builder.CreateStore(fopen_return, FPGlobal);
 }
 
-
 /* Insert a call to fprintf in func */
 void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
                                    llvm::Module &M) {
@@ -187,7 +249,8 @@ void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
       PointerType::getUnqual(Type::getInt8Ty(ctx)), FPGlobal);
 
   GlobalVariable *msg_global = M.getNamedGlobal("msg");
-  //LoadInst *msg_load = Builder.CreateLoad( PointerType::getUnqual(Type::getInt8Ty(ctx)), msg_global);
+  // LoadInst *msg_load = Builder.CreateLoad(
+  // PointerType::getUnqual(Type::getInt8Ty(ctx)), msg_global);
 
   Builder.CreateCall(Fprintf, {FP, msg_global});
 }
@@ -200,7 +263,8 @@ void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
 void CLogWave::addTraceWrite(Module &M) {
   auto &ctx = M.getContext();
   FunctionType *my_trace_ty = FunctionType::get(Type::getVoidTy(ctx), false);
-  Function *my_trace_func = Function::Create(my_trace_ty, GlobalValue::ExternalLinkage, "my_trace", M);
+  Function *my_trace_func = Function::Create(
+      my_trace_ty, GlobalValue::ExternalLinkage, "my_trace", M);
   BasicBlock *first_block = BasicBlock::Create(ctx, "first_bb", my_trace_func);
   IRBuilder<> Builder(first_block);
   Builder.SetInsertPoint(first_block);
@@ -213,5 +277,5 @@ void CLogWave::addTraceToInst(Module &M, Instruction *inst) {
   FunctionType *my_trace_ty = FunctionType::get(Type::getVoidTy(ctx), false);
   FunctionCallee calle = M.getOrInsertFunction("my_trace", my_trace_ty);
   IRBuilder<> Builder(inst->getNextNode());
-  Builder.CreateCall(calle); 
+  Builder.CreateCall(calle);
 }
