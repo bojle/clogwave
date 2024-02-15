@@ -36,11 +36,16 @@ StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
   return "";
 }
 
+struct VarContainer {
+  std::string name;
+  std::string type;
+  std::string width;
+};
+
 class FuncContainer {
   /* All variables used by the Function */
-  std::vector<std::string> vars;
+  std::vector<VarContainer> vars;
   /* Name of the function */
-  /* Consider StringRefs or Twines */
   StringRef name;
 
 public:
@@ -55,8 +60,11 @@ public:
            * */
           const DbgDeclareInst *dbg_inst = dyn_cast<DbgDeclareInst>(Inst);
           StringRef ret_name = getNameFromDbgInst(dbg_inst);
-          std::string t(func.getName().str() + std::string(".") + ret_name.str());
-          vars.push_back(t);
+          VarContainer vv;
+          vv.name = std::string(func.getName().str() + std::string(".") + ret_name.str());
+          vv.type = std::string("reg"); // TODO: write a func to get this from DbgInfo
+          vv.width = std::string("64"); // TODO: write a func to get this from DbgInfo
+          vars.push_back(vv);
         }
       }
     }
@@ -64,14 +72,14 @@ public:
   }
   StringRef getName() { return name; }
 
-  std::vector<std::string> getVars() const {
+  std::vector<VarContainer> getVars() const {
     return vars;
   }
 
   void print() const {
     outs() << "Function: " << name << '\n';
     for (auto &i : vars) {
-      outs() << '\t' << i << '\n';
+      outs() << '\t' << i.name << '\n';
     }
   }
 };
@@ -88,8 +96,8 @@ public:
   void generate_scope() const {
     for (auto &i : scope_hierarchy) {
       outs() << "$scope module " << i.first << " $end\n";
-      for (auto var : i.second->getVars()) {
-        outs() << "$var reg 64 "  << var << ' ' << var << " $end\n";
+      for (auto &var : i.second->getVars()) {
+        outs() << "$var " << var.type << ' ' << var.width << ' ' << var.name << ' ' << var.name << " $end\n";
       }
       outs() << "$upscope $end\n";
     }
