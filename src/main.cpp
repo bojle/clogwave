@@ -14,7 +14,7 @@ using namespace llvm;
 namespace {
 
 StringRef getTypeFromDbgInst(const DbgDeclareInst *dbg_inst) {
-  /* TODO: how to handle arrays? */
+  /* TODO: how to handle arrays, strings and structs? */
   StringRef int_string("int");
 
   Metadata *raw = dbg_inst->getRawVariable();
@@ -25,7 +25,30 @@ StringRef getTypeFromDbgInst(const DbgDeclareInst *dbg_inst) {
         return StringRef("reg");
     }
   }
+  /* default */
   return StringRef("real");
+}
+
+uint64_t getWidthFromDbgInst(const DbgDeclareInst *dbg_inst) {
+  StringRef int_string("int");
+
+  Metadata *raw = dbg_inst->getRawVariable();
+  if (isa<DILocalVariable>(raw)) {
+    DILocalVariable *local_var = dyn_cast<DILocalVariable>(raw);
+    DIType *local_type = local_var->getType();
+    if (local_type != NULL && local_type->getName().equals(int_string)) {
+        return local_type->getSizeInBits();
+    }
+    else if (local_type != NULL) {
+      if (isa<DIDerivedType>(local_type)) {
+        outs() << "found a string type\n";
+      }
+      else if (isa<DICompositeType>(local_type)) {
+        outs() << "probably a struct object\n";
+      }
+    }
+  }
+  return 0;
 }
 
 StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
@@ -43,7 +66,7 @@ StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
 struct VarContainer {
   std::string name;
   std::string type;
-  std::string width;
+  uint64_t width;
 };
 
 class FuncContainer {
@@ -68,8 +91,7 @@ public:
           vv.name = std::string(func.getName().str() + std::string(".") +
                                 ret_name.str());
           vv.type = getTypeFromDbgInst(dbg_inst);
-          vv.width =
-              std::string("64"); // TODO: write a func to get this from DbgInfo
+          vv.width = getWidthFromDbgInst(dbg_inst);
           vars.push_back(vv);
         }
       }
