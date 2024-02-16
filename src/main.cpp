@@ -13,6 +13,21 @@ using namespace llvm;
 
 namespace {
 
+StringRef getTypeFromDbgInst(const DbgDeclareInst *dbg_inst) {
+  /* TODO: how to handle arrays? */
+  StringRef int_string("int");
+
+  Metadata *raw = dbg_inst->getRawVariable();
+  if (isa<DILocalVariable>(raw)) {
+    DILocalVariable *local_var = dyn_cast<DILocalVariable>(raw);
+    DIType *local_type = local_var->getType();
+    if (local_type != NULL && local_type->getName().equals(int_string)) {
+        return StringRef("reg");
+    }
+  }
+  return StringRef("real");
+}
+
 StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
   Metadata *raw = dbg_inst->getRawVariable();
   if (isa<DILocalVariable>(raw)) {
@@ -52,8 +67,7 @@ public:
           VarContainer vv;
           vv.name = std::string(func.getName().str() + std::string(".") +
                                 ret_name.str());
-          vv.type =
-              std::string("reg"); // TODO: write a func to get this from DbgInfo
+          vv.type = getTypeFromDbgInst(dbg_inst);
           vv.width =
               std::string("64"); // TODO: write a func to get this from DbgInfo
           vars.push_back(vv);
