@@ -14,7 +14,7 @@ using namespace llvm;
 namespace {
 
 StringRef getTypeFromDbgInst(const DbgDeclareInst *dbg_inst) {
-  /* TODO: how to handle arrays, strings and structs? */
+  /* TODO: how to handle arrays, strings and structs, and floats? */
   StringRef int_string("int");
 
   Metadata *raw = dbg_inst->getRawVariable();
@@ -128,7 +128,15 @@ public:
       }
       outs() << "$upscope $end\n";
     }
+    outs() << "$enddefinitions $end\n";
   }
+
+  void generate_header() const {
+    outs() << "$date Thu Dec 14 18:01:19 2023 $end\n";
+    outs() << "$version Customz $end\n";
+    outs() << "$timescale 1s $end\n";
+  }
+
   void print() {
     for (auto i : scope_hierarchy) {
       i.second->print();
@@ -140,6 +148,7 @@ public:
     }
   }
 };
+
 
 class Node {
   std::vector<FuncContainer> funcs;
@@ -205,6 +214,7 @@ PreservedAnalyses CLogWave::run(Module &M, ModuleAnalysisManager &) {
       scope_hierarchy.insert(Func);
     }
   }
+  scope_hierarchy.generate_header();
   scope_hierarchy.generate_scope();
   return PreservedAnalyses::none();
 }
