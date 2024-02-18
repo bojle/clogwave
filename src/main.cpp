@@ -13,6 +13,58 @@ using namespace llvm;
 
 namespace {
 
+struct VarContainer {
+  std::string name;
+  std::string type;
+  uint64_t width;
+  // elements.size() == 0 if not a composite variable
+  std::vector<VarContainer*> elements;
+  void print() {
+      outs() << "$var " << this->type << ' ' << this->width << ' ' << this->name
+             << ' ' << this->name << " $end\n";
+  }
+};
+
+DIType *getLocalType(const DbgDeclareInst *dbg_inst) {
+  Metadata *raw = dbg_inst->getRawVariable();
+  if (isa<DILocalVariable>(raw)) {
+    DILocalVariable *local_var = dyn_cast<DILocalVariable>(raw);
+    DIType *local_type = local_var->getType();
+    return local_type;
+  }
+  return nullptr;
+}
+
+bool isCompositeVar(const DbgDeclareInst *dbg_inst) {
+  DIType *local_type = getLocalType(dbg_inst);
+  if (isa<DICompositeType>(local_type)) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<VarContainer*> getCompositeVarElements(const DbgDeclareInst *dbg_inst) {
+  std::vector<VarContainer*> ret;
+  if (isCompositeVar(dbg_inst)) {
+    DIType *local_type = getLocalType(dbg_inst);
+    DICompositeType *comp_type = dyn_cast<DICompositeType>(local_type);
+    /* DINodeArray are of llvm::MDTupleTypedArrayWrapper type */
+    DINodeArray arr_node = comp_type->getElements();
+    for (int i = 0; i < arr_node.size(); ++i) {
+      if (isa<DIDerivedType>(arr_node[i])) {
+        DIDerivedType *derived_type = dyn_cast<DIDerivedType>(arr_node[i]);
+        VarContainer *vc = new VarContainer();
+        vc->name = comp_type->getName().str() + std::string(".") + derived_type->getName().str();      
+        vc->type = derived_type->getBaseType()->getName();
+        vc->width = derived_type->getSizeInBits();
+        ret.push_back(vc);
+      }
+    }
+  }
+  return ret;
+}
+
+
 StringRef getTypeFromDbgInst(const DbgDeclareInst *dbg_inst) {
   /* TODO: how to handle arrays, strings and structs, and floats? */
   StringRef int_string("int");
@@ -41,10 +93,8 @@ uint64_t getWidthFromDbgInst(const DbgDeclareInst *dbg_inst) {
     }
     else if (local_type != NULL) {
       if (isa<DIDerivedType>(local_type)) {
+        // TODO: get string size
         outs() << "found a string type\n";
-      }
-      else if (isa<DICompositeType>(local_type)) {
-        outs() << "probably a struct object\n";
       }
     }
   }
@@ -63,15 +113,10 @@ StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
   return "";
 }
 
-struct VarContainer {
-  std::string name;
-  std::string type;
-  uint64_t width;
-};
 
 class FuncContainer {
   /* All variables used by the Function */
-  std::vector<VarContainer> vars;
+  std::vector<VarContainer*> vars;
   /* Name of the function */
   StringRef name;
 
@@ -87,11 +132,16 @@ public:
            * */
           const DbgDeclareInst *dbg_inst = dyn_cast<DbgDeclareInst>(Inst);
           StringRef ret_name = getNameFromDbgInst(dbg_inst);
-          VarContainer vv;
-          vv.name = std::string(func.getName().str() + std::string(".") +
+          VarContainer *vv = new VarContainer();
+          vv->name = std::string(func.getName().str() + std::string(".") +
                                 ret_name.str());
-          vv.type = getTypeFromDbgInst(dbg_inst);
-          vv.width = getWidthFromDbgInst(dbg_inst);
+          vv->type = getTypeFromDbgInst(dbg_inst);
+          vv->width = getWidthFromDbgInst(dbg_inst);
+
+          if (isCompositeVar(dbg_inst)) {
+            outs() << "composite var found\n";
+            vv->elements = getCompositeVarElements(dbg_inst);
+          }
           vars.push_back(vv);
         }
       }
@@ -100,12 +150,12 @@ public:
   }
   StringRef getName() { return name; }
 
-  std::vector<VarContainer> getVars() const { return vars; }
+  std::vector<VarContainer*> getVars() const { return vars; }
 
   void print() const {
     outs() << "Function: " << name << '\n';
-    for (auto &i : vars) {
-      outs() << '\t' << i.name << '\n';
+    for (auto *i : vars) {
+      outs() << '\t' << i->name << '\n';
     }
   }
 };
@@ -122,9 +172,11 @@ public:
   void generate_scope() const {
     for (auto &i : scope_hierarchy) {
       outs() << "$scope module " << i.first << " $end\n";
-      for (auto &var : i.second->getVars()) {
-        outs() << "$var " << var.type << ' ' << var.width << ' ' << var.name
-               << ' ' << var.name << " $end\n";
+      for (VarContainer *var : i.second->getVars()) {
+        var->print();
+        for (VarContainer *var_inner : var->elements) {
+          var_inner->print();
+        }
       }
       outs() << "$upscope $end\n";
     }
