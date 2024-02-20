@@ -353,8 +353,18 @@ void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
 }
 
 /* Add this function into module M
- *    void my_trace() {
- *      fprintf(gbl, "hello");
+ *    void trace_print_reg(long timeval, char *varname, long val) {
+ *      fprintf(gbl, "s%ld %s", val, varname);
+ *    }
+ *
+ *    void trace_print_str(long timeval, char *varname, char *str) {
+ *      fprintf(gbl, "s%s %s", str, varname);
+ *    }
+ *
+ *    void trace_print_float(long timeval, char *varname, float b) {
+ *      char buf[32];
+ *      char *s = snprintf(buf, 128, "%.08f", b);
+ *      trace_print_str(timeval, varname,  s);
  *    }
  */
 void CLogWave::addTraceWrite(Module &M) {
