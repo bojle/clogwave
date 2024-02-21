@@ -18,10 +18,10 @@ struct VarContainer {
   std::string type;
   uint64_t width;
   // elements.size() == 0 if not a composite variable
-  std::vector<VarContainer*> elements;
+  std::vector<VarContainer *> elements;
   void print() {
-      outs() << "$var " << this->type << ' ' << this->width << ' ' << this->name
-             << ' ' << this->name << " $end\n";
+    outs() << "$var " << this->type << ' ' << this->width << ' ' << this->name
+           << ' ' << this->name << " $end\n";
   }
 };
 
@@ -43,8 +43,9 @@ bool isCompositeVar(const DbgDeclareInst *dbg_inst) {
   return false;
 }
 
-std::vector<VarContainer*> getCompositeVarElements(const DbgDeclareInst *dbg_inst) {
-  std::vector<VarContainer*> ret;
+std::vector<VarContainer *>
+getCompositeVarElements(const DbgDeclareInst *dbg_inst) {
+  std::vector<VarContainer *> ret;
   if (isCompositeVar(dbg_inst)) {
     DIType *local_type = getLocalType(dbg_inst);
     DICompositeType *comp_type = dyn_cast<DICompositeType>(local_type);
@@ -54,7 +55,8 @@ std::vector<VarContainer*> getCompositeVarElements(const DbgDeclareInst *dbg_ins
       if (isa<DIDerivedType>(arr_node[i])) {
         DIDerivedType *derived_type = dyn_cast<DIDerivedType>(arr_node[i]);
         VarContainer *vc = new VarContainer();
-        vc->name = comp_type->getName().str() + std::string(".") + derived_type->getName().str();      
+        vc->name = comp_type->getName().str() + std::string(".") +
+                   derived_type->getName().str();
         vc->type = derived_type->getBaseType()->getName();
         vc->width = derived_type->getSizeInBits();
         ret.push_back(vc);
@@ -63,7 +65,6 @@ std::vector<VarContainer*> getCompositeVarElements(const DbgDeclareInst *dbg_ins
   }
   return ret;
 }
-
 
 StringRef getTypeFromDbgInst(const DbgDeclareInst *dbg_inst) {
   /* TODO: how to handle arrays, strings and structs, and floats? */
@@ -74,7 +75,7 @@ StringRef getTypeFromDbgInst(const DbgDeclareInst *dbg_inst) {
     DILocalVariable *local_var = dyn_cast<DILocalVariable>(raw);
     DIType *local_type = local_var->getType();
     if (local_type != NULL && local_type->getName().equals(int_string)) {
-        return StringRef("reg");
+      return StringRef("reg");
     }
   }
   /* default */
@@ -89,9 +90,8 @@ uint64_t getWidthFromDbgInst(const DbgDeclareInst *dbg_inst) {
     DILocalVariable *local_var = dyn_cast<DILocalVariable>(raw);
     DIType *local_type = local_var->getType();
     if (local_type != NULL && local_type->getName().equals(int_string)) {
-        return local_type->getSizeInBits();
-    }
-    else if (local_type != NULL) {
+      return local_type->getSizeInBits();
+    } else if (local_type != NULL) {
       if (isa<DIDerivedType>(local_type)) {
         // TODO: get string size
         outs() << "found a string type\n";
@@ -113,10 +113,9 @@ StringRef getNameFromDbgInst(const DbgDeclareInst *dbg_inst) {
   return "";
 }
 
-
 class FuncContainer {
   /* All variables used by the Function */
-  std::vector<VarContainer*> vars;
+  std::vector<VarContainer *> vars;
   /* Name of the function */
   StringRef name;
 
@@ -134,7 +133,7 @@ public:
           StringRef ret_name = getNameFromDbgInst(dbg_inst);
           VarContainer *vv = new VarContainer();
           vv->name = std::string(func.getName().str() + std::string(".") +
-                                ret_name.str());
+                                 ret_name.str());
           vv->type = getTypeFromDbgInst(dbg_inst);
           vv->width = getWidthFromDbgInst(dbg_inst);
 
@@ -150,7 +149,7 @@ public:
   }
   StringRef getName() { return name; }
 
-  std::vector<VarContainer*> getVars() const { return vars; }
+  std::vector<VarContainer *> getVars() const { return vars; }
 
   void print() const {
     outs() << "Function: " << name << '\n';
@@ -201,7 +200,6 @@ public:
   }
 };
 
-
 class Node {
   std::vector<FuncContainer> funcs;
 };
@@ -218,6 +216,7 @@ struct CLogWave : public llvm::PassInfoMixin<CLogWave> {
                            llvm::Module &M);
   void addTraceToInst(Module &M, Instruction *inst);
   void addTraceWrite(Module &M);
+  void addTracePrintReg(Module &M);
 };
 
 } // namespace
@@ -258,6 +257,7 @@ PreservedAnalyses CLogWave::run(Module &M, ModuleAnalysisManager &) {
   addFilePtrDeclaration(M);
   addCallToFopen(M, main_func);
   addTraceWrite(M);
+  addTracePrintReg(M);
 
   ScopeHierarchy scope_hierarchy;
 
@@ -353,8 +353,8 @@ void CLogWave::insertCallToFprintf(IRBuilder<> &Builder, llvm::Function &func,
 }
 
 /* Add this function into module M
- *    void trace_print_reg(long timeval, char *varname, long val) {
- *      fprintf(gbl, "s%ld %s", val, varname);
+ *    void trace_print_reg(long timeval, long val, char *varname) {
+ *      fprintf(gbl, "#%ld s%ld %s", val, varname);
  *    }
  *
  *    void trace_print_str(long timeval, char *varname, char *str) {
@@ -379,10 +379,32 @@ void CLogWave::addTraceWrite(Module &M) {
   Builder.CreateRetVoid();
 }
 
+/* instrument a call to my_trace after inst */
 void CLogWave::addTraceToInst(Module &M, Instruction *inst) {
   auto &ctx = M.getContext();
   FunctionType *my_trace_ty = FunctionType::get(Type::getVoidTy(ctx), false);
   FunctionCallee calle = M.getOrInsertFunction("my_trace", my_trace_ty);
   IRBuilder<> Builder(inst->getNextNode());
   Builder.CreateCall(calle);
+}
+
+/* add function's definition to the translation unit
+ *    void trace_print_reg(long timeval, long val, char *varname) {
+ *      fprintf(gbl, "#%ld s%ld %s", val, varname);
+ *    }
+ */
+void CLogWave::addTracePrintReg(Module &M) {
+  auto &ctx = M.getContext();
+  std::vector<Type *> trace_print_reg_args = {
+      Type::getInt64Ty(ctx), Type::getInt64Ty(ctx), get_pointer(M)};
+  FunctionType *trace_print_reg_ty =
+      FunctionType::get(Type::getVoidTy(ctx), trace_print_reg_args, false);
+  Function *my_trace_func = Function::Create(
+      trace_print_reg_ty, GlobalValue::ExternalLinkage, "trace_print_reg", M);
+
+  BasicBlock *first_block = BasicBlock::Create(ctx, "first_bb", my_trace_func);
+  IRBuilder<> builder(first_block);
+  builder.SetInsertPoint(first_block);
+  insertCallToFprintf(builder, *my_trace_func, M);
+  builder.CreateRetVoid();
 }
