@@ -1,5 +1,5 @@
 all:
-	ninja -C build
+	cmake --build build
 	clang -g -emit-llvm -S -O0 alt.c -o alt.ll
 	opt -load-pass-plugin build/libCLogWave.so -passes="CLogWave" alt.ll -o alt.bin
 	lli alt.bin	
